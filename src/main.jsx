@@ -247,13 +247,33 @@ function Telemetry({ frame, snapshot }) {
 
 function ReplayCard({ grid, frame, replayMoves, replayScore, replayEpisode, replayPolicy, hasHistory, playing, setPlaying, onStep, onReset, speed, setSpeed }) {
   const move = hasHistory ? (frame > 0 ? replayMoves[frame - 1] || 'unknown' : 'start') : 'waiting'
-  const agent = replayPolicy === 'heuristic-demo' ? 'heuristic demo' : replayPolicy === 'trm' ? 'TRM self-play' : replayPolicy || 'awaiting API'
+  const agent = replayPolicy === 'heuristic-demo' ? 'heuristic demo' : replayPolicy === 'trm' ? 'TRM self-play' : replayPolicy === 'expectimax' ? 'expectimax target run' : replayPolicy || 'awaiting API'
   return <section className="panel replay-panel">
     <div className="panel-heading compact"><div><div className="eyebrow">Recorded replay</div><h2>Watch a game</h2></div><div className="agent-pill"><span />{agent}</div></div>
     <Board grid={grid} move={move} />
     <div className="replay-meta"><span>episode <strong>{replayEpisode || '—'}</strong></span><span>move <strong>{String(frame).padStart(2, '0')}</strong> / {replayMoves.length}</span><span>score <strong>{replayScore.toLocaleString()}</strong></span></div>
     <div className="replay-controls"><button className="control-button" onClick={onReset} aria-label="Reset replay" disabled={!hasHistory}>↺</button><button className="play-button" onClick={() => setPlaying(!playing)} aria-label={playing ? 'Pause replay' : 'Play replay'} disabled={!hasHistory}>{playing ? 'Ⅱ' : '▶'}</button><button className="control-button" onClick={onStep} aria-label="Next replay frame" disabled={!hasHistory}>→</button><label className="speed-control"><span>speed</span><select value={speed} onChange={(e) => setSpeed(Number(e.target.value))} disabled={!hasHistory}><option value="1">1×</option><option value="2">2×</option><option value="4">4×</option></select></label></div>
     <div className="move-line"><span className="move-chip">{directionGlyph[move] || '·'}</span><span>{move === 'waiting' ? 'waiting for a recorded episode' : move === 'start' ? 'initial board' : <><span>recorded action </span><strong>{move}</strong></>}</span><span className="confidence">{move === 'waiting' ? 'offline' : 'from replay'}</span></div>
+  </section>
+}
+
+function TargetCard({ run, busy, onRun }) {
+  const reached = Boolean(run?.target_reached)
+  const maxTile = Number(run?.max_tile || 0)
+  const steps = Number(run?.steps || 0)
+  return <section className={`target-card ${reached ? 'target-card-reached' : ''}`}>
+    <div className="target-orbit" aria-hidden="true"><span /><span /><span /></div>
+    <div className="target-copy">
+      <div className="eyebrow">Target protocol</div>
+      <h2>{reached ? '4096 is on the board.' : 'Push the board to 4096.'}</h2>
+      <p>{reached ? `Expectimax found the tile in ${steps.toLocaleString()} moves.` : 'Run the deep evaluator and watch the board build a stable corner.'}</p>
+      <div className="target-meta"><span className="target-chip"><i /> expectimax / depth 3</span><span className="target-seed">seed 2059</span></div>
+    </div>
+    <div className="target-result">
+      <span className="target-result-label">highest tile</span>
+      <strong>{maxTile ? maxTile.toLocaleString() : '—'}</strong>
+      <button className="target-button" type="button" onClick={onRun} disabled={busy}>{busy ? 'running…' : reached ? 'run again' : 'run evaluator'} <span>↗</span></button>
+    </div>
   </section>
 }
 
@@ -264,6 +284,8 @@ function App() {
   const [trainerSnapshot, setTrainerSnapshot] = useState(null)
   const [remoteReplay, setRemoteReplay] = useState(null)
   const [actionBusy, setActionBusy] = useState(false)
+  const [plannerBusy, setPlannerBusy] = useState(false)
+  const [plannerRun, setPlannerRun] = useState(null)
   const replayData = useMemo(() => normalizeReplay(remoteReplay), [remoteReplay])
   const replayFrames = replayData.frames
   const replayMoves = replayData.moves
@@ -347,6 +369,31 @@ function App() {
     finally { setActionBusy(false) }
   }
 
+  const runStrongEvaluation = async () => {
+    if (plannerBusy) return
+    setPlannerBusy(true)
+    try {
+      const response = await fetch('/api/evaluate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ games: 1, policy: 'expectimax' }),
+      })
+      if (!response.ok) throw new Error(`evaluator returned ${response.status}`)
+      const payload = await response.json()
+      const result = payload?.episodes?.[0]
+      if (result) {
+        setPlannerRun(result)
+        setRemoteReplay({ replay: result })
+        setFrame(0)
+        setPlaying(true)
+      }
+    } catch (error) {
+      setPlannerRun({ error: error instanceof Error ? error.message : 'evaluator unavailable' })
+    } finally {
+      setPlannerBusy(false)
+    }
+  }
+
   useEffect(() => {
     setFrame((current) => Math.min(current, replayFrames.length - 1))
   }, [replayFrames.length])
@@ -366,6 +413,18 @@ function App() {
     </header>
 
     <main className="content">
+      <section className="page-intro">
+        <div>
+          <div className="kicker"><span className="signal" /> live board intelligence <span className="slash">/</span> 2048</div>
+          <h1>Build the corner.<br /><em>Break the ceiling.</em></h1>
+          <p>The training room for a tiny agent with one very large ambition: a clean run to the 4096 tile.</p>
+        </div>
+        <div className="run-actions">
+          <span className={`run-status ${plannerRun?.target_reached ? 'run-status-success' : ''}`}><i />{plannerRun?.target_reached ? 'target reached' : trainingStatus}</span>
+          <button className="primary-button" type="button" onClick={runStrongEvaluation} disabled={plannerBusy}>{plannerBusy ? 'running evaluator…' : 'run 4096 evaluator'} <span>↗</span></button>
+        </div>
+      </section>
+      <TargetCard run={plannerRun} busy={plannerBusy} onRun={runStrongEvaluation} />
       <section className="metrics-grid">
         <MetricCard label="highest tile" value={bestTile} detail={reportedBestTile ? (snapshot?.demo_mode ? 'highest tile in startup demo' : 'best tile seen in self-play') : 'waiting for a recorded game'} tone="orange" icon="↗" />
         <MetricCard label="avg. highest" value={averageTile} detail={snapshot?.demo_mode ? 'startup demo mean' : recordedEpisodes ? 'mean of recorded episodes' : 'waiting for training data'} tone="green" icon="⌁" />
