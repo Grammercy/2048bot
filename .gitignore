@@ -1,0 +1,7 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/training_stats.json
+data/checkpoints/
